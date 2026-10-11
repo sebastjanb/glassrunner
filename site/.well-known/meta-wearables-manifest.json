@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "name": "Glass Runner",
+  "description": "Three-lane endless runner: dodge trains, jump and slide.",
+  "appearance": {
+    "theme_color": "#4FE3FF",
+    "icon": {
+      "src": "icon.png",
+      "type": "monochrome"
+    }
+  }
+}
