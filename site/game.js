@@ -9,9 +9,10 @@
    Trains fill a lane: go around them. Back leaves the app (browser history);
    the game pauses when hidden. */
 
-const VERSION = '1.1.0';
-const HORIZON = 170, GROUND = 545, CX = 300;
-const DEPTH = 9;            // perspective strength: bigger is flatter
+const VERSION = '1.2.0';
+const HORIZON = 196, GROUND = 548, CX = 300;
+const DEPTH = 7.4;          // perspective strength: bigger is flatter
+const CURVE = 0.0013;       // the world falls away with distance, like running over a hill
 const LANE = 132;           // lane spacing at the player, px
 const UNIT = 62;            // one world unit of height at the player, px
 const FAR = 70;             // things appear at this distance
@@ -27,10 +28,17 @@ try { best = +localStorage.getItem('gr.best') || 0; } catch (e) { best = 0; }
 
 /* ------------------------------------------------------------- projection */
 
+// The camera rides behind the runner: it drifts sideways with the lane, lifts
+// a little in a jump and bobs with each step. Near things shift more than far
+// ones, which is what makes the scene read as deep.
+const cam = { x: 0, y: 0 };
+
 // World: x in px at the player's distance, y up in units, z ahead in units.
 function project(x, y, z) {
-  const s = DEPTH / (DEPTH + Math.max(z, -DEPTH * 0.6));
-  return { x: CX + x * s, y: HORIZON + (GROUND - HORIZON) * s - y * UNIT * s, s };
+  const zc = Math.max(z, -DEPTH * 0.6);
+  const s = DEPTH / (DEPTH + zc);
+  const drop = zc > 0 ? CURVE * zc * zc : 0;
+  return { x: CX + (x - cam.x) * s, y: HORIZON + (GROUND - HORIZON) * s - (y - cam.y - drop) * UNIT * s, s };
 }
 const laneX = (lane) => (lane - 1) * LANE;
 
@@ -165,30 +173,41 @@ function board(x0, x1, y0, y1, z, fill, stroke) {
 const chance = (n) => { const v = Math.sin(n * 127.1 + 311.7) * 43758.5453; return v - Math.floor(v); };
 
 function drawSky() {
+  const base = HORIZON + 44;   // the curved ground sinks below the true horizon
   if (!sky) {
-    sky = g.createLinearGradient(0, 0, 0, HORIZON);
-    sky.addColorStop(0, '#06122a');
-    sky.addColorStop(1, '#2a5f96');
+    sky = g.createLinearGradient(0, 0, 0, base);
+    sky.addColorStop(0, '#050e24');
+    sky.addColorStop(1, '#2f6aa6');
   }
   g.fillStyle = sky;
-  g.fillRect(0, 0, 600, HORIZON);
+  g.fillRect(0, 0, 600, base);
+  // Moon and a few stars; they stay put, so everything else moves against them.
+  g.fillStyle = '#f3f0dc';
+  g.beginPath(); g.arc(96 - cam.x * 0.02, 112, 20, 0, Math.PI * 2); g.fill();
+  for (let i = 0; i < 14; i++) g.fillRect(chance(i + 3) * 600, 78 + chance(i + 31) * 90, 2, 2);
+  // Far skyline in two layers that slide at different rates.
+  for (const [colour, rate, tall, seed] of [['#1f4878', 0.04, 34, 50], ['#173a63', 0.09, 58, 90]]) {
+    g.fillStyle = colour;
+    for (let i = -1; i < 17; i++) {
+      const h = 14 + chance(i + seed) * tall;
+      g.fillRect(i * 38 - cam.x * rate, base - h, 31, h);
+    }
+  }
   // Open ground beyond the walls: dark, so the scene has no holes.
   g.fillStyle = '#0c1830';
-  g.fillRect(0, HORIZON, 600, 600 - HORIZON);
-  // Far skyline, standing still.
-  g.fillStyle = '#1b3f6b';
-  for (let i = 0; i < 16; i++) {
-    const h = 12 + chance(i + 50) * 46;
-    g.fillRect(i * 38 - 4, HORIZON - h, 30, h);
-  }
+  g.fillRect(0, base, 600, 600 - base);
 }
 
 function drawGround(dist) {
-  // Track bed.
-  quad(project(-SIDE, 0, -3), project(SIDE, 0, -3), project(SIDE, 0, FAR), project(-SIDE, 0, FAR), '#2c1b10');
-  // Pavements on both sides.
-  for (const sgn of [-1, 1]) {
-    quad(project(sgn * SIDE, 0, -3), project(sgn * WALL, 0, -3), project(sgn * WALL, 0, FAR), project(sgn * SIDE, 0, FAR), '#4a4f5c');
+  // Track bed and pavements, in slices so they follow the curve of the ground.
+  for (let z = FAR - 10; z >= -10; z -= 10) {
+    const z0 = Math.max(z, -3), z1 = z + 10.2;
+    quad(project(-SIDE, 0, z0), project(SIDE, 0, z0), project(SIDE, 0, z1), project(-SIDE, 0, z1), '#2c1b10');
+    for (const sgn of [-1, 1]) {
+      quad(project(sgn * SIDE, 0.18, z0), project(sgn * (WALL + 60), 0.18, z0), project(sgn * (WALL + 60), 0.18, z1), project(sgn * SIDE, 0.18, z1), '#4a4f5c');
+      // Kerb: the pavement is a step up from the track.
+      quad(project(sgn * SIDE, 0, z0), project(sgn * SIDE, 0, z1), project(sgn * SIDE, 0.18, z1), project(sgn * SIDE, 0.18, z0), '#30343d');
+    }
   }
   // Sleepers slide toward the player: this is what reads as speed.
   g.fillStyle = '#8a5730';
@@ -201,38 +220,65 @@ function drawGround(dist) {
     }
   }
   g.fill();
-  // Rails: two bright bars per lane, thinning toward the horizon.
-  g.fillStyle = '#cdd6e0';
+  // Rails stand a little above the sleepers: a dark flank first, the bright top over it.
+  for (const [lift, half, colour] of [[0, 6, '#5d6672'], [0.1, 3.5, '#dfe7ef']]) {
+  g.fillStyle = colour;
   g.beginPath();
   for (let lane = 0; lane < 3; lane++) {
     for (const side of [-0.3, 0.3]) {
       const x = laneX(lane) + side * LANE;
-      const a = project(x - 4, 0, -3), b = project(x + 4, 0, -3), c = project(x + 4, 0, FAR), d = project(x - 4, 0, FAR);
+      const a = project(x - half, lift, -3), b = project(x + half, lift, -3), c = project(x + half, lift, FAR), d = project(x - half, lift, FAR);
       g.moveTo(a.x, a.y); g.lineTo(b.x, b.y); g.lineTo(c.x, c.y); g.lineTo(d.x, d.y); g.closePath();
     }
   }
   g.fill();
+  }
 }
 
-// Houses along both sides: one wall each, a few lit windows, an awning stripe.
+// Darker or lighter version of a colour: each face of a box gets its own shade.
+const shadeCache = new Map();
+function shade(hex, k) {
+  const key = hex + k;
+  let out = shadeCache.get(key);
+  if (!out) {
+    const n = parseInt(hex.slice(1), 16);
+    const part = (v) => Math.max(0, Math.min(255, Math.round(v * k)));
+    out = `rgb(${part(n >> 16)},${part((n >> 8) & 255)},${part(n & 255)})`;
+    shadeCache.set(key, out);
+  }
+  return out;
+}
+
+// Houses are boxes: a wall along the track, an end wall facing the runner and,
+// where it is low enough to see, a roof. They stand at different distances
+// from the track with gaps between them, so their corners show.
 function drawHouses(dist) {
   const first = Math.floor(dist / BLOCK);
   for (let k = first + Math.ceil(FAR / BLOCK); k >= first - 1; k--) {
-    const z0 = Math.max(k * BLOCK - dist, -3), z1 = (k + 1) * BLOCK - dist - 0.6;
-    if (z1 <= z0) continue;
     for (const sgn of [-1, 1]) {
-      const id = k * 2 + (sgn > 0 ? 1 : 0), x = sgn * WALL;
-      // Tall houses on the right, a low wall with sky above it on the left.
-      const h = sgn > 0 ? 6.3 + chance(id) * 3 : 2.1 + chance(id) * 1.3;
+      const id = k * 2 + (sgn > 0 ? 1 : 0);
+      const start = k * BLOCK - dist, len = 6.4 + chance(id + 3) * 3.2;
+      const z0 = Math.max(start, -3), z1 = start + len;
+      if (z1 <= z0) continue;
+      const x = sgn * (WALL + chance(id + 5) * 46), out = x + sgn * 260;
+      // Tall houses on the right, low sheds with sky above them on the left.
+      const h = sgn > 0 ? 6.6 + chance(id) * 3.2 : 2.0 + chance(id) * 1.6;
+      const colour = HOUSES[Math.floor(chance(id + 9) * HOUSES.length)];
+      // Haze: far houses sink into the night.
+      g.globalAlpha = Math.min(1, (FAR + 6 - z0) / 30);
       const wall = (y0, y1, za, zb, fill) => quad(project(x, y0, za), project(x, y0, zb), project(x, y1, zb), project(x, y1, za), fill);
-      wall(0, h, z0, z1, HOUSES[Math.floor(chance(id + 9) * HOUSES.length)]);
+      if (h < 5.4) quad(project(x, h, z0), project(out, h, z0), project(out, h, z1), project(x, h, z1), shade(colour, 1.25));   // roof
+      wall(0.18, h, z0, z1, colour);
+      if (start > -3) quad(project(x, 0.18, z0), project(out, 0.18, z0), project(out, h, z0), project(x, h, z0), shade(colour, 0.62)); // end wall
       wall(1.5, 1.72, z0, z1, '#f2efe6');                              // awning line above the shop
-      if (z0 > 46) continue;                                           // too far to see windows
-      for (let w = 0; w < 3; w++) {
-        const za = k * BLOCK - dist + 1.2 + w * 2.9;
-        if (za < -2 || sgn < 0) continue;
-        for (const y of [2.3, 4.3]) wall(y, y + 1.3, za, za + 1.7, chance(id * 7 + w + y) < 0.5 ? '#ffe3a1' : '#22364f');
+      if (z0 < 44 && sgn > 0) {
+        for (let w = 0; w < 3; w++) {
+          const za = start + 0.9 + w * 2.1;
+          if (za < -2 || za + 1.3 > z1) continue;
+          for (const y of [2.4, 4.4]) wall(y, y + 1.3, za, za + 1.3, chance(id * 7 + w + y) < 0.5 ? '#ffe3a1' : '#22364f');
+        }
       }
+      g.globalAlpha = 1;
     }
   }
 }
@@ -257,29 +303,39 @@ function drawWires(dist) {
   g.stroke();
 }
 
+// Dark patch on the ground under something: the cheapest way to make it sit there.
+function groundShadow(x0, x1, z0, z1) {
+  quad(project(x0, 0.02, z0), project(x1, 0.02, z0), project(x1, 0.02, z1), project(x0, 0.02, z1), 'rgba(0,0,0,.5)');
+}
+
 function drawTrain(t) {
-  const x = laneX(t.lane), w = LANE * 0.44, top = 3.2;
+  const x = laneX(t.lane), w = LANE * 0.44, top = 3.2, floor = 0.45;
   const z0 = Math.max(t.z, -1.5), z1 = t.z + t.len;
-  const f = [project(x - w, 0.25, z0), project(x + w, 0.25, z0), project(x + w, top, z0), project(x - w, top, z0)];
-  const b = [project(x - w, 0.25, z1), project(x + w, 0.25, z1), project(x + w, top, z1), project(x - w, top, z1)];
-  quad(f[3], f[2], b[2], b[3], '#6f7a86');                                   // roof
-  if (t.lane !== 1) {                                                        // the side facing the middle
-    const i = t.lane === 0 ? 1 : 0, j = t.lane === 0 ? 2 : 3, sx = t.lane === 0 ? x + w : x - w;
-    quad(f[i], b[i], b[j], f[j], '#8b96a2');
-    quad(project(sx, 1.7, z0), project(sx, 1.7, z1), project(sx, 2.5, z1), project(sx, 2.5, z0), '#20324a');   // window band
-    quad(project(sx, 0.25, z0), project(sx, 0.25, z1), project(sx, 0.6, z1), project(sx, 0.6, z0), '#c8433c'); // red skirt
+  groundShadow(x - w - 10, x + w + 10, z0 - 0.4, z1);
+  const f = [project(x - w, floor, z0), project(x + w, floor, z0), project(x + w, top, z0), project(x - w, top, z0)];
+  const b = [project(x - w, floor, z1), project(x + w, floor, z1), project(x + w, top, z1), project(x - w, top, z1)];
+  quad(f[3], f[2], b[2], b[3], '#7d8894');                                   // roof
+  // Whichever side the camera can see.
+  const sx = cam.x > x + w ? x + w : cam.x < x - w ? x - w : null;
+  if (sx !== null) {
+    const side = (y0, y1, fill) => quad(project(sx, y0, z0), project(sx, y0, z1), project(sx, y1, z1), project(sx, y1, z0), fill);
+    side(0.12, floor, '#23272e');                                            // wheels and underframe
+    side(floor, top, '#8b96a2');
+    side(1.7, 2.5, '#20324a');                                               // window band
+    side(floor, 0.8, '#c8433c');                                             // red skirt
   }
-  quad(f[0], f[1], f[2], f[3], '#aeb8c2');                                   // front
-  board(x - w, x + w, 0.25, 0.75, z0, '#c8433c');                            // red bumper
-  board(x - w * 0.34, x + w * 0.34, 0.85, 2.75, z0, '#8b96a2');              // door
-  board(x - w * 0.84, x - w * 0.42, 1.75, 2.6, z0, '#20324a');               // windows
-  board(x + w * 0.42, x + w * 0.84, 1.75, 2.6, z0, '#20324a');
-  board(x - w * 0.22, x + w * 0.22, 1.75, 2.6, z0, '#20324a');
-  const lamp = project(0, 1.2, z0);
+  board(x - w * 0.9, x + w * 0.9, 0.12, floor, z0, '#23272e');               // underframe
+  quad(f[0], f[1], f[2], f[3], '#b4bec8');                                   // front
+  board(x - w, x + w, floor, 0.9, z0, '#c8433c');                            // red bumper
+  board(x - w * 0.34, x + w * 0.34, 0.95, 2.8, z0, '#8b96a2');               // door
+  board(x - w * 0.84, x - w * 0.42, 1.8, 2.65, z0, '#20324a');               // windows
+  board(x + w * 0.42, x + w * 0.84, 1.8, 2.65, z0, '#20324a');
+  board(x - w * 0.22, x + w * 0.22, 1.8, 2.65, z0, '#20324a');
   g.fillStyle = '#fff3c4';
   for (const sgn of [-1, 1]) {
+    const lamp = project(x + sgn * w * 0.64, 1.3, z0);
     g.beginPath();
-    g.arc(CX + (x + sgn * w * 0.64) * lamp.s, lamp.y, Math.max(1.5, 7 * lamp.s), 0, Math.PI * 2);
+    g.arc(lamp.x, lamp.y, Math.max(1.5, 7 * lamp.s), 0, Math.PI * 2);
     g.fill();
   }
 }
@@ -291,27 +347,35 @@ function stripes(x0, x1, y0, y1, z, a, b, count) {
 }
 
 function drawBarrier(t) {
-  const x = laneX(t.lane), w = LANE * 0.42;
+  const x = laneX(t.lane), w = LANE * 0.42, deep = 0.45;
   const post = (px, y1) => board(px - 4, px + 4, 0, y1, t.z, '#59626f');
+  // The top of the board, so it has thickness.
+  const lid = (y, fill) => quad(project(x - w, y, t.z), project(x + w, y, t.z), project(x + w, y, t.z + deep), project(x - w, y, t.z + deep), fill);
+  groundShadow(x - w, x + w, t.z - 0.3, t.z + deep + 0.3);
   if (t.kind === 'low') {
     // Jump over: red and white board on two short posts.
     post(x - w + 8, 0.78); post(x + w - 8, 0.78);
+    lid(0.78, '#ffd9d6');
     stripes(x - w, x + w, 0.34, 0.78, t.z, '#e8433c', '#f4f4f4', 6);
-    const lamp = project(0, 0.92, t.z);
     g.fillStyle = '#ffb300';
     for (const sgn of [-1, 1]) {
+      const lamp = project(x + sgn * (w - 8), 0.92, t.z);
       g.beginPath();
-      g.arc(CX + (x + sgn * (w - 8)) * lamp.s, lamp.y, Math.max(1.5, 6 * lamp.s), 0, Math.PI * 2);
+      g.arc(lamp.x, lamp.y, Math.max(1.5, 6 * lamp.s), 0, Math.PI * 2);
       g.fill();
     }
     return;
   }
-  // Slide under: yellow and black bar held up high.
+  // Slide under: yellow and black bar held up high. Its underside faces the runner's eye line.
   post(x - w + 6, 1.72); post(x + w - 6, 1.72);
+  lid(1.72, '#fff0a8');
   stripes(x - w, x + w, 1.24, 1.72, t.z, '#ffcf33', '#2a2a2a', 6);
 }
 
 function drawCoin(c, now) {
+  const sh = project(laneX(c.lane), 0.02, c.z);
+  g.fillStyle = 'rgba(0,0,0,.45)';
+  g.beginPath(); g.ellipse(sh.x, sh.y, 11 * sh.s, 4 * sh.s, 0, 0, Math.PI * 2); g.fill();
   const p = project(laneX(c.lane), 0.62, c.z);
   const r = 15 * p.s, wide = Math.max(1.5, r * Math.abs(Math.cos(now / 220 + c.z)));
   g.fillStyle = '#e09a00';
@@ -329,7 +393,8 @@ function drawPlayer() {
   // Shadow on the track: tells how high the jump is.
   g.fillStyle = 'rgba(0,0,0,.55)';
   g.beginPath();
-  g.ellipse(x, GROUND + 5, 36 - h * 8, 9 - h * 2, 0, 0, Math.PI * 2);
+  const feet = project((player.pos - 1) * LANE, 0, 0);
+  g.ellipse(feet.x, feet.y + 5, 36 - h * 8, 9 - h * 2, 0, 0, Math.PI * 2);
   g.fill();
 
   const TOP = '#ff8a3d', TOP_DARK = '#d9661f', LEGS = '#2f5fd0', SHOE = '#ffffff';
@@ -363,14 +428,24 @@ function drawPlayer() {
   g.stroke();
   g.fillStyle = TOP;                                                   // body
   g.beginPath(); g.roundRect(x - 20, y - 100, 40, 58, 14); g.fill();
+  g.fillStyle = 'rgba(0,0,0,.16)';                                     // the side away from the moon
+  g.beginPath(); g.roundRect(x, y - 100, 20, 58, [0, 14, 14, 0]); g.fill();
   g.fillStyle = TOP_DARK;                                              // backpack
   g.beginPath(); g.roundRect(x - 12, y - 92, 24, 32, 8); g.fill();
+  g.fillStyle = '#b8551a';
+  g.beginPath(); g.roundRect(x - 12, y - 70, 24, 10, [0, 0, 8, 8]); g.fill();
   g.fillStyle = TOP;                                                   // hood
   g.beginPath(); g.arc(x, y - 116, 17, 0, Math.PI * 2); g.fill();
+  g.fillStyle = 'rgba(255,255,255,.22)';                               // moonlight on it
+  g.beginPath(); g.arc(x - 5, y - 121, 8, 0, Math.PI * 2); g.fill();
 }
 
 function render(now) {
   const dist = travelled || 0;
+  if (player && state !== 'title') {
+    cam.x = (player.pos - 1) * LANE * 0.45;
+    cam.y = height() * 0.22 + (state === 'play' && !player.jump && player.slide <= 0 ? Math.sin(player.run * 4.4) * 0.035 : 0) - (player.slide > 0 ? 0.25 : 0);
+  }
   g.fillStyle = '#000';
   g.fillRect(0, 0, 600, 600);
   drawSky();
