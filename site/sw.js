@@ -2,7 +2,7 @@
 // cache. One versioned set, served cache-first: mixing new scripts with old
 // HTML kills the app at start. Bump CACHE with every release.
 const PREFIX = 'glassrunner-';
-const CACHE = PREFIX + 'v1';
+const CACHE = PREFIX + 'v2';
 const SHELL = ['./', './game.js', './manifest.webmanifest', './icon-96.png', './icon-192.png'];
 
 self.addEventListener('install', (event) => {

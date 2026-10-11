@@ -1,15 +1,15 @@
 'use strict';
 
 /* Glass Runner — three-lane endless runner for Meta Ray-Ban Display glasses.
-   600×600 additive display: black is transparent, so the track is drawn as
-   bright lines on black. Input is the D-pad plus pinch:
+   600×600 additive display. Flat-coloured shapes in simple perspective: track,
+   houses, wires, trains. Input is the D-pad plus pinch:
      Left / Right  change lane      Up    jump (low barriers)
      Down          slide (high bars)
      Pinch         start, pause, continue
    Trains fill a lane: go around them. Back leaves the app (browser history);
    the game pauses when hidden. */
 
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const HORIZON = 170, GROUND = 545, CX = 300;
 const DEPTH = 9;            // perspective strength: bigger is flatter
 const LANE = 132;           // lane spacing at the player, px
@@ -21,7 +21,7 @@ const START_SPEED = 13, MAX_SPEED = 27, SPEED_UP = 0.16;   // units per second, 
 const canvas = document.getElementById('game');
 const g = canvas.getContext('2d');
 
-let state, things, coins, player, speed, travelled, picked, best, lastRowEnd, last = 0, stripes = 0;
+let state, things, coins, player, speed, travelled, picked, best, lastRowEnd, last = 0;
 
 try { best = +localStorage.getItem('gr.best') || 0; } catch (e) { best = 0; }
 
@@ -103,7 +103,6 @@ function tick(dt) {
   speed = Math.min(MAX_SPEED, speed + SPEED_UP * dt);
   const move = speed * dt;
   travelled += move;
-  stripes = (stripes + move) % 3;
   player.run += move;
 
   // Lane change is a quick glide, not a jump cut.
@@ -132,6 +131,16 @@ function tick(dt) {
 
 /* ---------------------------------------------------------------- drawing */
 
+// Everything is flat-coloured shapes, drawn far to near. No images, no
+// shadows, no per-frame gradients: the glasses' processor is small.
+
+const SIDE = 1.62 * LANE;          // edge of the track bed
+const WALL = 2.45 * LANE;          // where the buildings stand
+const WIRE = 7;                    // height of the overhead wires
+const BLOCK = 10;                  // one building every ten units
+const HOUSES = ['#b5523c', '#3f7fb0', '#c48a3a', '#5a9a6a', '#8a5aa8', '#a8504e', '#4f8f96'];
+let sky = null;
+
 function label(text, x, y, size, colour, align) {
   g.font = `700 ${size}px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
   g.fillStyle = colour || '#f4f4f4';
@@ -147,140 +156,227 @@ function quad(a, b, c, d, fill, stroke) {
   if (stroke) { g.strokeStyle = stroke; g.stroke(); }
 }
 
-function drawTrack() {
-  g.lineWidth = 2;
-  // Rails: two per lane, running to the horizon.
-  g.strokeStyle = '#5b6b8c';
+// A flat rectangle standing across the track at distance z.
+function board(x0, x1, y0, y1, z, fill, stroke) {
+  quad(project(x0, y0, z), project(x1, y0, z), project(x1, y1, z), project(x0, y1, z), fill, stroke);
+}
+
+// The same answer for the same building every frame, without storing any.
+const chance = (n) => { const v = Math.sin(n * 127.1 + 311.7) * 43758.5453; return v - Math.floor(v); };
+
+function drawSky() {
+  if (!sky) {
+    sky = g.createLinearGradient(0, 0, 0, HORIZON);
+    sky.addColorStop(0, '#06122a');
+    sky.addColorStop(1, '#2a5f96');
+  }
+  g.fillStyle = sky;
+  g.fillRect(0, 0, 600, HORIZON);
+  // Open ground beyond the walls: dark, so the scene has no holes.
+  g.fillStyle = '#0c1830';
+  g.fillRect(0, HORIZON, 600, 600 - HORIZON);
+  // Far skyline, standing still.
+  g.fillStyle = '#1b3f6b';
+  for (let i = 0; i < 16; i++) {
+    const h = 12 + chance(i + 50) * 46;
+    g.fillRect(i * 38 - 4, HORIZON - h, 30, h);
+  }
+}
+
+function drawGround(dist) {
+  // Track bed.
+  quad(project(-SIDE, 0, -3), project(SIDE, 0, -3), project(SIDE, 0, FAR), project(-SIDE, 0, FAR), '#2c1b10');
+  // Pavements on both sides.
+  for (const sgn of [-1, 1]) {
+    quad(project(sgn * SIDE, 0, -3), project(sgn * WALL, 0, -3), project(sgn * WALL, 0, FAR), project(sgn * SIDE, 0, FAR), '#4a4f5c');
+  }
+  // Sleepers slide toward the player: this is what reads as speed.
+  g.fillStyle = '#8a5730';
+  g.beginPath();
+  for (let z = 3 - dist % 3; z < FAR; z += 3) {
+    for (let lane = 0; lane < 3; lane++) {
+      const x = laneX(lane), a = project(x - 0.43 * LANE, 0, z), b = project(x + 0.43 * LANE, 0, z);
+      const c = project(x + 0.43 * LANE, 0, z + 0.8), d = project(x - 0.43 * LANE, 0, z + 0.8);
+      g.moveTo(a.x, a.y); g.lineTo(b.x, b.y); g.lineTo(c.x, c.y); g.lineTo(d.x, d.y); g.closePath();
+    }
+  }
+  g.fill();
+  // Rails: two bright bars per lane, thinning toward the horizon.
+  g.fillStyle = '#cdd6e0';
   g.beginPath();
   for (let lane = 0; lane < 3; lane++) {
     for (const side of [-0.3, 0.3]) {
-      const a = project(laneX(lane) + side * LANE, 0, -2), b = project(laneX(lane) + side * LANE, 0, FAR);
-      g.moveTo(a.x, a.y); g.lineTo(b.x, b.y);
+      const x = laneX(lane) + side * LANE;
+      const a = project(x - 4, 0, -3), b = project(x + 4, 0, -3), c = project(x + 4, 0, FAR), d = project(x - 4, 0, FAR);
+      g.moveTo(a.x, a.y); g.lineTo(b.x, b.y); g.lineTo(c.x, c.y); g.lineTo(d.x, d.y); g.closePath();
     }
   }
-  g.stroke();
-  // Sleepers slide toward the player: this is what reads as speed.
-  g.strokeStyle = '#3b465e';
-  g.beginPath();
-  for (let z = 3 - stripes; z < FAR; z += 3) {
-    for (let lane = 0; lane < 3; lane++) {
-      const a = project(laneX(lane) - 0.4 * LANE, 0, z), b = project(laneX(lane) + 0.4 * LANE, 0, z);
-      g.moveTo(a.x, a.y); g.lineTo(b.x, b.y);
+  g.fill();
+}
+
+// Houses along both sides: one wall each, a few lit windows, an awning stripe.
+function drawHouses(dist) {
+  const first = Math.floor(dist / BLOCK);
+  for (let k = first + Math.ceil(FAR / BLOCK); k >= first - 1; k--) {
+    const z0 = Math.max(k * BLOCK - dist, -3), z1 = (k + 1) * BLOCK - dist - 0.6;
+    if (z1 <= z0) continue;
+    for (const sgn of [-1, 1]) {
+      const id = k * 2 + (sgn > 0 ? 1 : 0), x = sgn * WALL;
+      // Tall houses on the right, a low wall with sky above it on the left.
+      const h = sgn > 0 ? 6.3 + chance(id) * 3 : 2.1 + chance(id) * 1.3;
+      const wall = (y0, y1, za, zb, fill) => quad(project(x, y0, za), project(x, y0, zb), project(x, y1, zb), project(x, y1, za), fill);
+      wall(0, h, z0, z1, HOUSES[Math.floor(chance(id + 9) * HOUSES.length)]);
+      wall(1.5, 1.72, z0, z1, '#f2efe6');                              // awning line above the shop
+      if (z0 > 46) continue;                                           // too far to see windows
+      for (let w = 0; w < 3; w++) {
+        const za = k * BLOCK - dist + 1.2 + w * 2.9;
+        if (za < -2 || sgn < 0) continue;
+        for (const y of [2.3, 4.3]) wall(y, y + 1.3, za, za + 1.7, chance(id * 7 + w + y) < 0.5 ? '#ffe3a1' : '#22364f');
+      }
     }
   }
-  g.stroke();
-  // Posts along both sides.
-  g.strokeStyle = '#4d7dff';
+}
+
+// Masts and the wires they carry.
+function drawWires(dist) {
+  g.strokeStyle = '#77839a';
+  for (let z = 14 - dist % 14 + 56; z > 0; z -= 14) {
+    const l0 = project(-SIDE, 0, z), l1 = project(-SIDE, WIRE + 0.4, z), r0 = project(SIDE, 0, z), r1 = project(SIDE, WIRE + 0.4, z);
+    g.lineWidth = Math.max(1.5, 7 * l0.s);
+    g.beginPath();
+    g.moveTo(l0.x, l0.y); g.lineTo(l1.x, l1.y); g.lineTo(r1.x, r1.y); g.lineTo(r0.x, r0.y);
+    g.stroke();
+  }
+  g.strokeStyle = '#5c6880';
+  g.lineWidth = 1.5;
   g.beginPath();
-  for (let z = 6 - (stripes * 2) % 6; z < FAR; z += 6) {
-    for (const x of [-2.15 * LANE, 2.15 * LANE]) {
-      const a = project(x, 0, z), b = project(x, 2.4, z);
-      g.moveTo(a.x, a.y); g.lineTo(b.x, b.y);
-    }
+  for (let lane = 0; lane < 3; lane++) {
+    const a = project(laneX(lane), WIRE, -5), b = project(laneX(lane), WIRE, FAR);
+    g.moveTo(a.x, a.y); g.lineTo(b.x, b.y);
   }
   g.stroke();
 }
 
-function drawThing(t) {
+function drawTrain(t) {
+  const x = laneX(t.lane), w = LANE * 0.44, top = 3.2;
+  const z0 = Math.max(t.z, -1.5), z1 = t.z + t.len;
+  const f = [project(x - w, 0.25, z0), project(x + w, 0.25, z0), project(x + w, top, z0), project(x - w, top, z0)];
+  const b = [project(x - w, 0.25, z1), project(x + w, 0.25, z1), project(x + w, top, z1), project(x - w, top, z1)];
+  quad(f[3], f[2], b[2], b[3], '#6f7a86');                                   // roof
+  if (t.lane !== 1) {                                                        // the side facing the middle
+    const i = t.lane === 0 ? 1 : 0, j = t.lane === 0 ? 2 : 3, sx = t.lane === 0 ? x + w : x - w;
+    quad(f[i], b[i], b[j], f[j], '#8b96a2');
+    quad(project(sx, 1.7, z0), project(sx, 1.7, z1), project(sx, 2.5, z1), project(sx, 2.5, z0), '#20324a');   // window band
+    quad(project(sx, 0.25, z0), project(sx, 0.25, z1), project(sx, 0.6, z1), project(sx, 0.6, z0), '#c8433c'); // red skirt
+  }
+  quad(f[0], f[1], f[2], f[3], '#aeb8c2');                                   // front
+  board(x - w, x + w, 0.25, 0.75, z0, '#c8433c');                            // red bumper
+  board(x - w * 0.34, x + w * 0.34, 0.85, 2.75, z0, '#8b96a2');              // door
+  board(x - w * 0.84, x - w * 0.42, 1.75, 2.6, z0, '#20324a');               // windows
+  board(x + w * 0.42, x + w * 0.84, 1.75, 2.6, z0, '#20324a');
+  board(x - w * 0.22, x + w * 0.22, 1.75, 2.6, z0, '#20324a');
+  const lamp = project(0, 1.2, z0);
+  g.fillStyle = '#fff3c4';
+  for (const sgn of [-1, 1]) {
+    g.beginPath();
+    g.arc(CX + (x + sgn * w * 0.64) * lamp.s, lamp.y, Math.max(1.5, 7 * lamp.s), 0, Math.PI * 2);
+    g.fill();
+  }
+}
+
+// Striped board: alternating blocks of two colours.
+function stripes(x0, x1, y0, y1, z, a, b, count) {
+  const step = (x1 - x0) / count;
+  for (let i = 0; i < count; i++) board(x0 + i * step, x0 + (i + 1) * step, y0, y1, z, i % 2 ? b : a);
+}
+
+function drawBarrier(t) {
   const x = laneX(t.lane), w = LANE * 0.42;
-  g.lineWidth = 3;
-  g.lineJoin = 'round';
-  if (t.kind === 'train') {
-    const z0 = Math.max(t.z, -1.5), z1 = t.z + t.len, top = 2.5;
-    const f = [project(x - w, 0, z0), project(x + w, 0, z0), project(x + w, top, z0), project(x - w, top, z0)];
-    const b = [project(x - w, 0, z1), project(x + w, 0, z1), project(x + w, top, z1), project(x - w, top, z1)];
-    quad(f[3], f[2], b[2], b[3], 'rgba(255,90,90,.16)', '#ff5a5a');            // roof
-    if (t.lane !== 1) {                                                       // the side facing the middle
-      const i = t.lane === 0 ? 1 : 0, j = t.lane === 0 ? 2 : 3;
-      quad(f[i], b[i], b[j], f[j], 'rgba(255,90,90,.10)', '#ff5a5a');
-    }
-    quad(f[0], f[1], f[2], f[3], 'rgba(255,90,90,.30)', '#ff5a5a');            // front
-    // Windscreen and lights, so it reads as a train and not a wall.
-    const s = f[0].s, cx = (f[0].x + f[1].x) / 2, yTop = f[3].y, hgt = f[0].y - f[3].y, half = (f[1].x - f[0].x) / 2;
-    g.strokeStyle = '#ffd0d0';
-    g.lineWidth = Math.max(1.5, 3 * s);
-    g.strokeRect(cx - half * 0.7, yTop + hgt * 0.14, half * 1.4, hgt * 0.3);
-    g.fillStyle = '#ffe9a8';
+  const post = (px, y1) => board(px - 4, px + 4, 0, y1, t.z, '#59626f');
+  if (t.kind === 'low') {
+    // Jump over: red and white board on two short posts.
+    post(x - w + 8, 0.78); post(x + w - 8, 0.78);
+    stripes(x - w, x + w, 0.34, 0.78, t.z, '#e8433c', '#f4f4f4', 6);
+    const lamp = project(0, 0.92, t.z);
+    g.fillStyle = '#ffb300';
     for (const sgn of [-1, 1]) {
       g.beginPath();
-      g.arc(cx + sgn * half * 0.6, yTop + hgt * 0.8, Math.max(1.5, 6 * s), 0, Math.PI * 2);
+      g.arc(CX + (x + sgn * (w - 8)) * lamp.s, lamp.y, Math.max(1.5, 6 * lamp.s), 0, Math.PI * 2);
       g.fill();
     }
     return;
   }
-  const low = t.kind === 'low';
-  const y0 = low ? 0 : 1.25, y1 = low ? 0.7 : 1.75, colour = low ? '#ffc23d' : '#c77bff';
-  const a = project(x - w, y0, t.z), b = project(x + w, y0, t.z), c = project(x + w, y1, t.z), d = project(x - w, y1, t.z);
-  quad(a, b, c, d, low ? 'rgba(255,194,61,.28)' : 'rgba(199,123,255,.28)', colour);
-  // Warning stripes.
-  g.beginPath();
-  for (let i = 1; i < 4; i++) {
-    const u = i / 4;
-    g.moveTo(a.x + (b.x - a.x) * u, a.y); g.lineTo(d.x + (c.x - d.x) * u, d.y);
-  }
-  g.stroke();
-  if (!low) {
-    // Posts hold the bar up; the gap under it is where the runner slides.
-    g.beginPath();
-    for (const px of [x - w, x + w]) {
-      const p0 = project(px, 0, t.z), p1 = project(px, y0, t.z);
-      g.moveTo(p0.x, p0.y); g.lineTo(p1.x, p1.y);
-    }
-    g.stroke();
-  }
+  // Slide under: yellow and black bar held up high.
+  post(x - w + 6, 1.72); post(x + w - 6, 1.72);
+  stripes(x - w, x + w, 1.24, 1.72, t.z, '#ffcf33', '#2a2a2a', 6);
 }
 
 function drawCoin(c, now) {
-  const p = project(laneX(c.lane), 0.55, c.z);
-  const r = 13 * p.s, squash = Math.abs(Math.cos(now / 220 + c.z));
+  const p = project(laneX(c.lane), 0.62, c.z);
+  const r = 15 * p.s, wide = Math.max(1.5, r * Math.abs(Math.cos(now / 220 + c.z)));
+  g.fillStyle = '#e09a00';
+  g.beginPath(); g.ellipse(p.x, p.y, wide, r, 0, 0, Math.PI * 2); g.fill();
   g.fillStyle = '#ffd83f';
-  g.beginPath();
-  g.ellipse(p.x, p.y, Math.max(1.5, r * squash), r, 0, 0, Math.PI * 2);
-  g.fill();
+  g.beginPath(); g.ellipse(p.x, p.y, wide * 0.72, r * 0.72, 0, 0, Math.PI * 2); g.fill();
 }
 
+// The runner, seen from behind: hooded top, backpack, white shoes.
 function drawPlayer() {
   const p = project((player.pos - 1) * LANE, height(), 0);
-  const x = p.x, y = p.y;
+  const x = p.x, y = p.y, h = height();
   g.lineCap = 'round';
   g.lineJoin = 'round';
   // Shadow on the track: tells how high the jump is.
-  const sh = project((player.pos - 1) * LANE, 0, 0);
-  g.fillStyle = 'rgba(79,227,255,.25)';
+  g.fillStyle = 'rgba(0,0,0,.55)';
   g.beginPath();
-  g.ellipse(sh.x, sh.y + 4, 34 - height() * 8, 8, 0, 0, Math.PI * 2);
+  g.ellipse(x, GROUND + 5, 36 - h * 8, 9 - h * 2, 0, 0, Math.PI * 2);
   g.fill();
 
-  g.strokeStyle = '#4fe3ff';
-  g.fillStyle = '#4fe3ff';
+  const TOP = '#ff8a3d', TOP_DARK = '#d9661f', LEGS = '#2f5fd0', SHOE = '#ffffff';
   if (player.slide > 0) {
-    // Sliding: flat on the back, feet first.
-    g.lineWidth = 16;
-    g.beginPath(); g.moveTo(x - 30, y - 14); g.lineTo(x + 22, y - 14); g.stroke();
-    g.beginPath(); g.arc(x - 40, y - 20, 13, 0, Math.PI * 2); g.fill();
+    // Sliding: low on the back, feet first.
+    g.strokeStyle = LEGS; g.lineWidth = 15;
+    g.beginPath(); g.moveTo(x, y - 14); g.lineTo(x + 34, y - 12); g.stroke();
+    g.strokeStyle = TOP; g.lineWidth = 26;
+    g.beginPath(); g.moveTo(x - 24, y - 18); g.lineTo(x + 2, y - 16); g.stroke();
+    g.fillStyle = TOP_DARK;
+    g.beginPath(); g.arc(x - 42, y - 22, 15, 0, Math.PI * 2); g.fill();
+    g.fillStyle = SHOE;
+    g.beginPath(); g.ellipse(x + 42, y - 12, 10, 7, 0, 0, Math.PI * 2); g.fill();
     return;
   }
-  const swing = player.jump > 0 ? 0.9 : Math.sin(player.run * 2.2);
-  g.lineWidth = 11;
-  g.beginPath();                                                  // legs
-  g.moveTo(x - 6, y - 46); g.lineTo(x - 6 - swing * 16, y - 6 - Math.max(0, swing) * 14);
-  g.moveTo(x + 6, y - 46); g.lineTo(x + 6 + swing * 16, y - 6 - Math.max(0, -swing) * 14);
+  const air = player.jump > 0;
+  const swing = air ? 0.85 : Math.sin(player.run * 2.2);
+  const footL = { x: x - 8 - swing * 15, y: y - 6 - Math.max(0, swing) * 16 - (air ? 12 : 0) };
+  const footR = { x: x + 8 + swing * 15, y: y - 6 - Math.max(0, -swing) * 16 - (air ? 4 : 0) };
+  g.strokeStyle = LEGS; g.lineWidth = 13;
+  g.beginPath();
+  g.moveTo(x - 8, y - 48); g.lineTo(footL.x, footL.y);
+  g.moveTo(x + 8, y - 48); g.lineTo(footR.x, footR.y);
   g.stroke();
-  g.lineWidth = 9;
-  g.beginPath();                                                  // arms
-  g.moveTo(x - 17, y - 86); g.lineTo(x - 26, y - 62 + swing * 12);
-  g.moveTo(x + 17, y - 86); g.lineTo(x + 26, y - 62 - swing * 12);
+  g.fillStyle = SHOE;
+  for (const f of [footL, footR]) { g.beginPath(); g.ellipse(f.x, f.y + 3, 11, 7, 0, 0, Math.PI * 2); g.fill(); }
+  g.strokeStyle = TOP; g.lineWidth = 11;                               // arms
+  g.beginPath();
+  g.moveTo(x - 19, y - 90); g.lineTo(x - 29, y - 64 + swing * 13);
+  g.moveTo(x + 19, y - 90); g.lineTo(x + 29, y - 64 - swing * 13);
   g.stroke();
-  g.beginPath();                                                  // body, seen from behind
-  g.roundRect(x - 17, y - 96, 34, 54, 12);
-  g.fill();
-  g.beginPath(); g.arc(x, y - 112, 14, 0, Math.PI * 2); g.fill();  // head
+  g.fillStyle = TOP;                                                   // body
+  g.beginPath(); g.roundRect(x - 20, y - 100, 40, 58, 14); g.fill();
+  g.fillStyle = TOP_DARK;                                              // backpack
+  g.beginPath(); g.roundRect(x - 12, y - 92, 24, 32, 8); g.fill();
+  g.fillStyle = TOP;                                                   // hood
+  g.beginPath(); g.arc(x, y - 116, 17, 0, Math.PI * 2); g.fill();
 }
 
 function render(now) {
+  const dist = travelled || 0;
   g.fillStyle = '#000';
   g.fillRect(0, 0, 600, 600);
-  drawTrack();
+  drawSky();
+  drawGround(dist);
+  drawHouses(dist);
+  drawWires(dist);
 
   if (things) {
     // Far to near, so near things cover far ones.
@@ -289,29 +385,38 @@ function render(now) {
     let drawn = false;
     for (const item of all) {
       if (!drawn && item.z < 0 && state !== 'title') { drawPlayer(); drawn = true; }
-      if (item.t) { if (item.t.z < FAR) drawThing(item.t); } else if (item.c.z < FAR && item.c.z > -1) drawCoin(item.c, now);
+      if (item.z >= FAR) continue;
+      // Things fade in out of the distance instead of popping up.
+      g.globalAlpha = Math.min(1, (FAR - item.z) / 14);
+      if (item.c) { if (item.c.z > -1) drawCoin(item.c, now); }
+      else if (item.t.kind === 'train') drawTrain(item.t);
+      else drawBarrier(item.t);
+      g.globalAlpha = 1;
     }
     if (!drawn && state !== 'title') drawPlayer();
   }
 
-  label('SCORE', 24, 28, 16, '#a9adb3');
-  label(String(things ? score() : 0), 24, 58, 30);
-  label('COINS', 300, 28, 16, '#a9adb3', 'center');
-  label(String(picked || 0), 300, 58, 30, '#ffd83f', 'center');
-  label('BEST', 576, 28, 16, '#a9adb3', 'right');
-  label(String(Math.max(best, things ? score() : 0)), 576, 58, 30, '#f4f4f4', 'right');
+  // Score plates: dark, so the numbers stay readable over the sky.
+  g.fillStyle = 'rgba(0,0,0,.6)';
+  for (const [x, w] of [[12, 150], [225, 150], [438, 150]]) { g.beginPath(); g.roundRect(x, 8, w, 60, 14); g.fill(); }
+  label('SCORE', 24, 30, 15, '#a9adb3');
+  label(String(things ? score() : 0), 24, 58, 28);
+  label('COINS', 300, 30, 15, '#a9adb3', 'center');
+  label(String(picked || 0), 300, 58, 28, '#ffd83f', 'center');
+  label('BEST', 576, 30, 15, '#a9adb3', 'right');
+  label(String(Math.max(best, things ? score() : 0)), 576, 58, 28, '#f4f4f4', 'right');
 
   const banner = (title, colour, sub, hint) => {
     g.fillStyle = 'rgba(0,0,0,.86)';
-    g.fillRect(90, 210, 420, hint ? 190 : 140);
-    label(title, 300, 266, 38, colour, 'center');
-    if (Math.floor(now / 600) % 2 === 0) label(sub, 300, 316, 22, '#f4f4f4', 'center');
+    g.beginPath(); g.roundRect(80, 206, 440, hint ? 196 : 136, 24); g.fill();
+    label(title, 300, 264, 38, colour, 'center');
+    if (Math.floor(now / 600) % 2 === 0) label(sub, 300, 314, 22, '#f4f4f4', 'center');
     if (hint) {
-      label('Swipe left / right: change lane', 300, 356, 17, '#a9adb3', 'center');
-      label('Up: jump   ·   Down: slide', 300, 380, 17, '#a9adb3', 'center');
+      label('Swipe left / right: change lane', 300, 354, 17, '#a9adb3', 'center');
+      label('Up: jump   ·   Down: slide', 300, 378, 17, '#a9adb3', 'center');
     }
   };
-  if (state === 'title') banner('GLASS RUNNER', '#4fe3ff', 'Pinch to run', true);
+  if (state === 'title') banner('GLASS RUNNER', '#ff8a3d', 'Pinch to run', true);
   else if (state === 'over') banner('CRASH', '#ff5a5a', 'Pinch to run again', false);
   else if (state === 'pause') banner('PAUSED', '#fff', 'Pinch to continue', false);
 }
